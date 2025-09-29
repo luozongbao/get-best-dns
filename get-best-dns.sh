@@ -1,58 +1,75 @@
 #!/bin/bash
-FILE="dns-list"
-TRIES=3
-RESULTS="dns-results.txt"
 
-# --- Read DNS from file ---
+FILE="dns-list"
+DOMAIN="openai.com"
+RESULTS="dns-results.txt"
+extra_dns=()
+
+# --- ฟังก์ชันช่วยแสดง usage ---
+usage() {
+  echo "Usage: $0 [-d domain] [-a dns1 dns2 ...]"
+  echo "  -d domain   Specify the domain to query (default: openai.com)"
+  echo "  -a dns...   Additional extra DNS server(s) to test"
+  exit 1
+}
+
+# --- parse options ---
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d)
+      shift
+      [[ -z "$1" ]] && usage
+      DOMAIN="$1"
+      shift
+      ;;
+    -a)
+      shift
+      while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+        extra_dns+=("$1")
+        shift
+      done
+      ;;
+    *)
+      usage
+      ;;
+  esac
+done
+
+# --- อ่าน DNS จากไฟล์ dns-list ---
 dns_list=()
 while read -r line; do
-  [[ -z "$line" || "$line" =~ ^# ]] && continue
+  [[ -z "$line" || "$line" =~ ^# ]] && continue  # skip empty or comment
   dns_list+=("$line")
 done < "$FILE"
 
-# --- Add command-line IPs ---
-if [ "$#" -gt 0 ]; then
-  for arg in "$@"; do
-    dns_list+=("$arg")
-  done
-fi
+# --- เพิ่ม DNS จาก -l option ---
+dns_list+=("${extra_dns[@]}")
 
-echo "🔎 Checking DNS servers ($TRIES tries per DNS)"
+# --- เช็ค DNS ---
+echo "🔎 Checking DNS servers (query: $DOMAIN)"
 echo "-----------------------------------------------"
 rm -f "$RESULTS"
 
 for server in "${dns_list[@]}"; do
-  total_rt=0
-  success=0
-  last_ip=""
-  for i in $(seq 1 $TRIES); do
-    # สร้าง subdomain แบบสุ่มทุกครั้ง เพื่อลดโอกาสโดน DNS server เข้าใจผิด
-    subdomain="test-$(date +%s%3N).example.com"
-    START=$(date +%s%3N)
-    result=$(dig @"$server" "$subdomain" +time=2 +tries=1 +short 2>/dev/null)
-    END=$(date +%s%3N)
-    if [ -n "$result" ]; then
-      RT=$((END - START))
-      total_rt=$((total_rt + RT))
-      success=$((success + 1))
-      last_ip="$result"
-    fi
-  done
-  if [ "$success" -gt 0 ]; then
-    avg_rt=$((total_rt / success))
-    echo "[OK] $server → $last_ip (avg $avg_rt ms over $success tries)"
-    echo "$avg_rt $server" >> "$RESULTS"
+  START=$(date +%s%3N)  # start time in ms
+  result=$(dig @"$server" "$DOMAIN" +time=2 +tries=1 +short A 2>/dev/null)
+  END=$(date +%s%3N)
+
+  if [ -n "$result" ]; then
+    RT=$((END - START))
+    echo "[OK] $server → $result ($RT ms)"
+    echo "$RT $server" >> "$RESULTS"
   else
-    echo "[FAIL] $server → no response"
+    echo "[FAIL] $server did not respond"
   fi
 done
 
-# --- Show Top 3 DNS ---
-if [ -s "$RESULTS" ]; then
+# --- แสดง Top 3 fastest DNS ---
+if [[ -f "$RESULTS" ]]; then
   echo ""
-  echo "✅ Top 3 fastest usable DNS:"
+  echo "✅ Top 3 fastest DNS:"
   sort -n "$RESULTS" | head -n 3 | awk '{print $2, "(" $1 " ms)"}'
 else
   echo ""
-  echo "❌ No DNS responded successfully."
+  echo "⚠️ No DNS responded."
 fi
